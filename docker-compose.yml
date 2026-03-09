@@ -1,0 +1,35 @@
+services:
+  # ===============================
+  # 1. POSTGRESQL VERİTABANI (Sadece Engine İçin)
+  # ===============================
+  postgres:
+    image: postgres:15-alpine
+    container_name: matching-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: matching_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345
+      PGPORT: 5437
+    ports:
+      - "5437:5437"
+    volumes:
+      - matching-pgdata:/var/lib/postgresql/data
+
+  # ===============================
+  # 2. REDIS (IN-MEMORY VERİ)
+  # ===============================
+  redis:
+    image: redis:7-alpine
+    container_name: matching-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - matching-redisdata:/data
+
+# Verilerin WalkTogether ile karışmaması için Volume isimleri özelleştirildi
+volumes:
+  matching-pgdata:
+  matching-redisdata:
