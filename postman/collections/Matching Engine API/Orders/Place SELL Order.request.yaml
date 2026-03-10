@@ -1,0 +1,19 @@
+$kind: http-request
+name: Place SELL Order
+method: POST
+url: '{{baseUrl}}/api/orders'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": "user-002",
+      "symbol": "BTC_USDT",
+      "side": "SELL",
+      "price": 65500.0000,
+      "quantity": 0.2500
+    }
+examples: './.resources/Place SELL Order.resources/examples'

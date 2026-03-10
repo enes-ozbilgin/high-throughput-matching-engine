@@ -1,0 +1,6 @@
+$kind: collection
+name: Matching Engine API
+description: API collection for the high-throughput order matching engine. Covers order placement scenarios for a trading system.
+variables:
+  - key: baseUrl
+    value: 'http://localhost:8080'

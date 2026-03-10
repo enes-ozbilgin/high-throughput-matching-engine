@@ -1,0 +1,19 @@
+$kind: http-request
+name: Place Stock BUY Order (THYAO)
+method: POST
+url: '{{baseUrl}}/api/orders'
+order: 3000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": "user-003",
+      "symbol": "THYAO",
+      "side": "BUY",
+      "price": 285.5000,
+      "quantity": 100.0000
+    }
+examples: './.resources/Place Stock BUY Order (THYAO).resources/examples'
