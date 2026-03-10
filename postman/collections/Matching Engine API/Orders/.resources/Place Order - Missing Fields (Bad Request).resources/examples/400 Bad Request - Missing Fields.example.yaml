@@ -1,0 +1,20 @@
+$kind: http-example
+name: 400 Bad Request - Missing Fields
+request:
+  url: '{{baseUrl}}/api/orders'
+  method: POST
+response:
+  statusCode: 400
+  statusText: Bad Request
+  headers:
+    - key: Content-Type
+      value: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "timestamp": "2026-03-10T09:03:00Z",
+        "status": 400,
+        "error": "Bad Request",
+        "message": "Required fields 'side', 'price', and 'quantity' must not be null."
+      }

@@ -1,0 +1,24 @@
+$kind: http-example
+name: 200 OK - SELL Order Created
+request:
+  url: '{{baseUrl}}/api/orders'
+  method: POST
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    - key: Content-Type
+      value: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "id": 2,
+        "userId": "user-002",
+        "symbol": "BTC_USDT",
+        "side": "SELL",
+        "price": 65500.0000,
+        "quantity": 0.2500,
+        "status": "PENDING",
+        "createdAt": "2026-03-10T09:01:00Z"
+      }

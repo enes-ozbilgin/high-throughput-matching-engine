@@ -1,0 +1,16 @@
+$kind: http-request
+name: Place Order - Missing Fields (Bad Request)
+method: POST
+url: '{{baseUrl}}/api/orders'
+order: 4000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": "user-004",
+      "symbol": "ETH_USDT"
+    }
+examples: './.resources/Place Order - Missing Fields (Bad Request).resources/examples'
