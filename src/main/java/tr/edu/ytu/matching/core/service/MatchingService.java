@@ -10,9 +10,13 @@ import org.springframework.stereotype.Service;
 import tr.edu.ytu.matching.core.model.Order;
 import tr.edu.ytu.matching.core.model.OrderSide;
 import tr.edu.ytu.matching.core.model.OrderStatus;
+import tr.edu.ytu.matching.core.model.Trade;
+import tr.edu.ytu.matching.core.repository.OrderRepository;
+import tr.edu.ytu.matching.core.repository.TradeRepository;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.PriorityQueue;
 import java.util.concurrent.ExecutorService;
@@ -26,6 +30,8 @@ public class MatchingService {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private static final String ORDER_QUEUE = "engine:order_queue";
+    private final OrderRepository orderRepository;
+    private final TradeRepository tradeRepository;
 
     // 1. ALIM EMİRLERİ DEFTERİ (Önce en yüksek fiyat, eşitse en eski zaman)
     private final PriorityQueue<Order> buyOrders = new PriorityQueue<>(
@@ -123,8 +129,8 @@ public class MatchingService {
                 } else {
                     buyOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                
-                // TODO: Veritabanını güncelle ve WebSocket ile arayüze (canlı grafiğe) haber ver!
+                // Maker: Tahtadaki satıcı (bestSellOrder), Taker: Gelen alıcı (buyOrder)
+                saveTradeAndUpdateOrders(bestSellOrder, buyOrder, tradeQuantity, bestSellOrder.getPrice());
                 
             } else {
                 // Alıcının parası artık sıradaki en ucuz satıcıya bile yetmiyorsa döngüyü kırıp çıkıyoruz
@@ -167,13 +173,33 @@ public class MatchingService {
                 } else {
                     sellOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                
-                // TODO: Veritabanını güncelle ve WebSocket ile arayüze haber ver!
+                // Maker: Tahtadaki alıcı (bestBuyOrder), Taker: Gelen satıcı (sellOrder)
+                saveTradeAndUpdateOrders(bestBuyOrder, sellOrder, tradeQuantity, bestBuyOrder.getPrice());
                 
             } else {
                 // Tahtadaki en yüksek teklif bile satıcının istediği fiyata ulaşmıyorsa döngüyü kır
                 break;
             }
         }
+    }
+    
+    private void saveTradeAndUpdateOrders(Order makerOrder, Order takerOrder, BigDecimal tradeQuantity, BigDecimal tradePrice) {
+        
+        // 1. Dekontu (Trade) Oluştur ve Kaydet
+        Trade trade = Trade.builder()
+                .symbol(makerOrder.getSymbol())
+                .makerOrderId(makerOrder.getId()) // Tahtada bekleyen
+                .takerOrderId(takerOrder.getId()) // Gelen
+                .price(tradePrice) // İşlem fiyatı her zaman Maker'ın (tahtada bekleyenin) fiyatından gerçekleşir
+                .quantity(tradeQuantity)
+                .executedAt(Instant.now())
+                .build();
+                
+        tradeRepository.save(trade);
+        log.info("💾 İşlem (Trade) başarıyla DB'ye kaydedildi! Dekont ID: {}", trade.getId());
+
+        // 2. Emirlerin yeni miktarlarını ve durumlarını (PARTIALLY_FILLED veya FILLED) DB'de güncelle
+        orderRepository.save(makerOrder);
+        orderRepository.save(takerOrder);
     }
 }
