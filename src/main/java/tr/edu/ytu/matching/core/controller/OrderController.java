@@ -5,7 +5,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import tr.edu.ytu.matching.core.model.Order;
 import tr.edu.ytu.matching.core.service.OrderService;
-
+@CrossOrigin(origins = "*")
 @RestController
 @RequestMapping("/api/orders")
 @RequiredArgsConstructor

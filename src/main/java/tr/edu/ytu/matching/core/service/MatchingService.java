@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 @RequiredArgsConstructor
 public class MatchingService {
 
+	private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private static final String ORDER_QUEUE = "engine:order_queue";
@@ -201,5 +202,7 @@ public class MatchingService {
         // 2. Emirlerin yeni miktarlarını ve durumlarını (PARTIALLY_FILLED veya FILLED) DB'de güncelle
         orderRepository.save(makerOrder);
         orderRepository.save(takerOrder);
+        // Trade objesini /topic/trades kanalına fırlat!
+        messagingTemplate.convertAndSend("/topic/trades", trade);
     }
 }
