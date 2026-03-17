@@ -80,17 +80,26 @@ public class MatchingService {
 
     private void processOrder(Order order) {
         if (order.getSide() == OrderSide.BUY) {
-            buyOrders.add(order);
-            log.info("🟢 Alım emri tahtaya yazıldı. Tahtadaki toplam alıcı sayısı: {}", buyOrders.size());
             
+            // 1. Önce Satıcı tahtasına saldır ve alabileceğini al (Taker)
             matchBuyOrder(order); 
             
-        } else if (order.getSide() == OrderSide.SELL) {
-            sellOrders.add(order);
-            log.info("🔴 Satım emri tahtaya yazıldı. Tahtadaki toplam satıcı sayısı: {}", sellOrders.size());
+            // 2. Eğer elinde hala almak istediği miktar kaldıysa, kendi tahtana (kuyruğa) yaz (Maker)
+            if (order.getQuantity().compareTo(java.math.BigDecimal.ZERO) > 0) {
+                buyOrders.add(order);
+                log.info("🟢 Alım emri tahtaya yazıldı. Bekleyen alıcı sayısı: {}", buyOrders.size());
+            }
             
-            // TODO: Eşleşme var mı diye Alış tahtasını kontrol et
+        } else if (order.getSide() == OrderSide.SELL) {
+            
+            // 1. Önce Alıcı tahtasına saldır ve satabileceğini sat (Taker)
             matchSellOrder(order);
+            
+            // 2. Eğer elinde hala satmak istediği miktar kaldıysa, kendi tahtana (kuyruğa) yaz (Maker)
+            if (order.getQuantity().compareTo(java.math.BigDecimal.ZERO) > 0) {
+                sellOrders.add(order);
+                log.info("🔴 Satım emri tahtaya yazıldı. Bekleyen satıcı sayısı: {}", sellOrders.size());
+            }
         }
     }
     
@@ -204,5 +213,22 @@ public class MatchingService {
         orderRepository.save(takerOrder);
         // Trade objesini /topic/trades kanalına fırlat!
         messagingTemplate.convertAndSend("/topic/trades", trade);
+    }
+    
+    // Arayüzün tahtayı görebilmesi için anlık durum raporu (Snapshot)
+    public java.util.Map<String, Object> getOrderBookSnapshot() {
+        java.util.Map<String, Object> snapshot = new java.util.HashMap<>();
+        
+        // Alıcıları (Bids) en yüksek fiyattan en düşüğe sırala
+        snapshot.put("bids", buyOrders.stream()
+                .sorted(java.util.Comparator.comparing(Order::getPrice).reversed())
+                .toList());
+                
+        // Satıcıları (Asks) en düşük fiyattan en yükseğe sırala
+        snapshot.put("asks", sellOrders.stream()
+                .sorted(java.util.Comparator.comparing(Order::getPrice))
+                .toList());
+                
+        return snapshot;
     }
 }
