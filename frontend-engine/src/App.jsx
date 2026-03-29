@@ -18,8 +18,20 @@ function App() {
     }
   };
 
+  // Geçmiş işlemleri veritabanından çek
+  const fetchHistoricalTrades = async () => {
+    try {
+      const response = await axios.get('http://localhost:8080/api/trades');
+      setTrades(response.data);
+    } catch (error) {
+      console.error("Geçmiş işlemler çekilirken hata:", error);
+    }
+  };
+
   useEffect(() => {
     fetchOrderBook();
+    fetchHistoricalTrades();
+
     const interval = setInterval(fetchOrderBook, 1000);
 
     // Daha güvenilir ve modern WebSocket bağlantısı
