@@ -27,6 +27,9 @@ public class Order {
 
     @Enumerated(EnumType.STRING)
     private OrderSide side; // BUY veya SELL
+    
+    @Enumerated(EnumType.STRING)
+    private OrderType type = OrderType.LIMIT; // Varsayılan olarak Limit kabul edelim
 
     // Finansal işlemler için BigDecimal KESİNLİKLE şarttır.
     @Column(precision = 19, scale = 4)

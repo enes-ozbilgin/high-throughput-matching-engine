@@ -1,234 +1,243 @@
 package tr.edu.ytu.matching.core.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import tr.edu.ytu.matching.core.model.Order;
 import tr.edu.ytu.matching.core.model.OrderSide;
 import tr.edu.ytu.matching.core.model.OrderStatus;
+import tr.edu.ytu.matching.core.model.OrderType;
 import tr.edu.ytu.matching.core.model.Trade;
 import tr.edu.ytu.matching.core.repository.OrderRepository;
 import tr.edu.ytu.matching.core.repository.TradeRepository;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.PriorityQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
-@Slf4j
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class MatchingService {
 
-	private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
-    private final StringRedisTemplate redisTemplate;
-    private final ObjectMapper objectMapper;
-    private static final String ORDER_QUEUE = "engine:order_queue";
+	// Redis'ten veri okumak için
+    private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
+    
+    // Virtual Thread veya Classic Thread kullanacak olan havuzumuz!
+    private final java.util.concurrent.ExecutorService executorService;
+    
     private final OrderRepository orderRepository;
     private final TradeRepository tradeRepository;
+    private final SimpMessagingTemplate messagingTemplate;
 
-    // 1. ALIM EMİRLERİ DEFTERİ (Önce en yüksek fiyat, eşitse en eski zaman)
-    private final PriorityQueue<Order> buyOrders = new PriorityQueue<>(
-            Comparator.comparing(Order::getPrice).reversed()
-                      .thenComparing(Order::getCreatedAt)
+    // Sistemdeki 10 Farklı İşlem Çifti
+    public static final List<String> SYMBOLS = List.of(
+            "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
+            "ADA_USDT", "AVAX_USDT", "DOGE_USDT", "DOT_USDT", "LINK_USDT"
     );
 
-    // 2. SATIM EMİRLERİ DEFTERİ (Önce en düşük fiyat, eşitse en eski zaman)
-    private final PriorityQueue<Order> sellOrders = new PriorityQueue<>(
-            Comparator.comparing(Order::getPrice)
-                      .thenComparing(Order::getCreatedAt)
-    );
+    // Her sembolün kendi Emir Defterini ve Kilidini (Lock Striping) tutan harita
+    private final Map<String, OrderBook> orderBooks = new ConcurrentHashMap<>();
 
-    // Spring Boot tamamen ayağa kalktığında bu metot otomatik tetiklenir
-    @EventListener(ApplicationReadyEvent.class)
-    public void startMatchingEngine() {
-        log.info("Eşleştirme Motoru (Matching Engine) uykudan uyandı ve Redis kuyruğunu dinlemeye başladı...");
+    // İç Sınıf: Bağımsız Emir Defteri
+    @Data
+    public static class OrderBook {
+        private final ReentrantLock lock = new ReentrantLock();
+        private final PriorityQueue<Order> buyOrders = new PriorityQueue<>(
+                Comparator.comparing(Order::getPrice).reversed().thenComparing(Order::getCreatedAt)
+        );
+        private final PriorityQueue<Order> sellOrders = new PriorityQueue<>(
+                Comparator.comparing(Order::getPrice).thenComparing(Order::getCreatedAt)
+        );
+    }
 
-        // Gelen API isteklerini (8080 portunu) kilitlememek için dinleme işlemini arka plan iş parçacığına (Thread) atıyoruz
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-        executor.submit(() -> {
+    @PostConstruct
+    public void init() {
+        // 1. Sistem kalkarken 10 pazarın tahtasını ve kilitlerini hazırla
+        for (String symbol : SYMBOLS) {
+            orderBooks.put(symbol, new OrderBook());
+        }
+        log.info("🚀 10 Farklı pazar için Lock Striping altyapısı başarıyla kuruldu!");
+
+        // 2. Redis'i dinleyen ve Virtual Thread kullanan işçi (Consumer)
+        executorService.submit(() -> {
+            log.info("🎧 Redis Emir Dinleyicisi (Consumer) başlatıldı! Kuyruk dinleniyor...");
             
-            // Motor çalıştığı sürece dönecek olan sonsuz döngü (Kuyruk Dinleyici)
+            // JSON metnini Order objesine çevirecek araç (Tarih formatları için modül ekliyoruz)
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+
             while (true) {
                 try {
-                    // Kuyruğun sağından (en eskisinden) emri çek. Eğer kuyruk boşsa 1 saniye bekle, sonra tekrar bak (BPOP mantığı).
-                    String orderJson = redisTemplate.opsForList().rightPop(ORDER_QUEUE, Duration.ofSeconds(1));
-
+                    // DÜZELTME 1: Kuyruk adını tam olarak OrderService'teki gibi yazdık.
+                    // DÜZELTME 2: Gelen veriyi bir JSON metni (String) olarak karşıladık.
+                	String orderJson = redisTemplate.opsForList().rightPop("engine:order_queue", java.time.Duration.ofSeconds(1));
+                    
                     if (orderJson != null) {
-                        // Gelen JSON metnini tekrar bizim Java'daki Order objemize çeviriyoruz
-                        Order incomingOrder = objectMapper.readValue(orderJson, Order.class);
-                        
-                        log.info("🔥 Kuyruktan yeni emir kapıldı! İşleniyor -> ID: {}, {} {} {}", 
-                            incomingOrder.getId(), incomingOrder.getSide(), incomingOrder.getQuantity(), incomingOrder.getSymbol());
+                        // DÜZELTME 3: Gelen JSON metnini tekrar Order objesine dönüştürüyoruz
+                        Order newOrder = mapper.readValue(orderJson, Order.class);
 
-                        // Asıl eşleştirme algoritmasını başlat
-                        processOrder(incomingOrder);
+                        log.info("🔥 Kuyruktan yeni emir kapıldı! İşleniyor -> ID: {}, {} {} {}", 
+                                newOrder.getId(), newOrder.getSide(), newOrder.getQuantity(), newOrder.getSymbol());
+                        
+                        // Emri alıp Lock Striping'li eşleştirme metoduna gönderiyoruz
+                        processOrder(newOrder);
                     }
                 } catch (Exception e) {
-                    log.error("Kuyruktan emir çekilirken kritik bir hata oluştu: ", e);
+                    // Zaman aşımı durumunda (1 saniyede bir) buraya düşer, döngü devam eder.
+                    // log.error("Kuyruk okuma hatası: {}", e.getMessage()); 
                 }
             }
         });
     }
 
-    private void processOrder(Order order) {
-        if (order.getSide() == OrderSide.BUY) {
-            
-            // 1. Önce Satıcı tahtasına saldır ve alabileceğini al (Taker)
-            matchBuyOrder(order); 
-            
-            // 2. Eğer elinde hala almak istediği miktar kaldıysa, kendi tahtana (kuyruğa) yaz (Maker)
-            if (order.getQuantity().compareTo(java.math.BigDecimal.ZERO) > 0) {
-                buyOrders.add(order);
-                log.info("🟢 Alım emri tahtaya yazıldı. Bekleyen alıcı sayısı: {}", buyOrders.size());
+    public void processOrder(Order order) {
+        OrderBook ob = orderBooks.get(order.getSymbol());
+        if (ob == null) {
+            log.error("Geçersiz Sembol: {}", order.getSymbol());
+            return;
+        }
+
+        // 🔒 LOCK STRIPING: Sadece bu sembolün kilidini al! 
+        // BTC eşleşirken ETH tahtası hiçbir engelleme olmadan çalışmaya devam eder.
+        ob.getLock().lock();
+        try {
+            if (order.getSide() == OrderSide.BUY) {
+                matchBuyOrder(order, ob);
+                
+                // SADECE LİMİT EMİRLERİ TAHTAYA YAZILABİLİR
+                if (order.getType() == OrderType.LIMIT && order.getQuantity().compareTo(BigDecimal.ZERO) > 0) {
+                    ob.getBuyOrders().add(order);
+                }
+            } else if (order.getSide() == OrderSide.SELL) {
+                matchSellOrder(order, ob);
+                
+                // SADECE LİMİT EMİRLERİ TAHTAYA YAZILABİLİR
+                if (order.getType() == OrderType.LIMIT && order.getQuantity().compareTo(BigDecimal.ZERO) > 0) {
+                    ob.getSellOrders().add(order);
+                }
             }
-            
-        } else if (order.getSide() == OrderSide.SELL) {
-            
-            // 1. Önce Alıcı tahtasına saldır ve satabileceğini sat (Taker)
-            matchSellOrder(order);
-            
-            // 2. Eğer elinde hala satmak istediği miktar kaldıysa, kendi tahtana (kuyruğa) yaz (Maker)
-            if (order.getQuantity().compareTo(java.math.BigDecimal.ZERO) > 0) {
-                sellOrders.add(order);
-                log.info("🔴 Satım emri tahtaya yazıldı. Bekleyen satıcı sayısı: {}", sellOrders.size());
-            }
+        } finally {
+            // Kilidi ne olursa olsun serbest bırak
+            ob.getLock().unlock();
         }
     }
-    
-    private void matchBuyOrder(Order buyOrder) {
+
+    private void matchBuyOrder(Order buyOrder, OrderBook ob) {
+        // Emrin piyasa emri olup olmadığını kontrol et
+        boolean isMarket = buyOrder.getType() == OrderType.MARKET;
         
-        // Alıcının almak istediği miktar sıfırdan büyük olduğu sürece VE satıcı tahtası boş olmadığı sürece dön
-        while (buyOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !sellOrders.isEmpty()) {
+        while (buyOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !ob.getSellOrders().isEmpty()) {
+            Order bestSellOrder = ob.getSellOrders().peek();
             
-            // Satıcı tahtasındaki EN UCUZ teklife bak (peek metodu kuyruktan silmeden sadece bakar)
-            Order bestSellOrder = sellOrders.peek();
-            
-            // Alıcının teklif ettiği fiyat, satıcının istediği fiyata eşit veya ondan büyük mü?
-            if (buyOrder.getPrice().compareTo(bestSellOrder.getPrice()) >= 0) {
-                
-                // EŞLEŞME YAKALANDI! 🚀
-                // Ne kadar işlem yapılacak? (Alıcının istediği ile satıcının elindeki miktardan hangisi küçükse o kadar)
+            // PİYASA emriyse fiyata bakmadan eşleşir, LİMİT emriyse fiyatın uygun olması gerekir
+            if (isMarket || buyOrder.getPrice().compareTo(bestSellOrder.getPrice()) >= 0) {
                 BigDecimal tradeQuantity = buyOrder.getQuantity().min(bestSellOrder.getQuantity());
                 
-                log.info("💥 EŞLEŞME YAKALANDI! Alıcı ID: {}, Satıcı ID: {}, Fiyat: {}, Miktar: {}", 
-                        buyOrder.getUserId(), bestSellOrder.getUserId(), bestSellOrder.getPrice(), tradeQuantity);
-                
-                // 1. Miktarları hesaplayıp düşüyoruz
+                // İşlem fiyatı her zaman tahtada bekleyen (maker) emrin fiyatı olur
+                executeTrade(bestSellOrder, buyOrder, tradeQuantity, bestSellOrder.getPrice());
+
                 buyOrder.setQuantity(buyOrder.getQuantity().subtract(tradeQuantity));
                 bestSellOrder.setQuantity(bestSellOrder.getQuantity().subtract(tradeQuantity));
-                
-                // 2. Satıcının elindeki miktar tamamen bittiyse onu tahtadan (kuyruktan) atıyoruz
+
                 if (bestSellOrder.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
                     bestSellOrder.setStatus(OrderStatus.FILLED);
-                    sellOrders.poll(); // poll() metodu emri kuyruktan tamamen siler
+                    ob.getSellOrders().poll();
                 } else {
                     bestSellOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                
-                // 3. Alıcının durumu güncelleniyor
+
                 if (buyOrder.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
                     buyOrder.setStatus(OrderStatus.FILLED);
                 } else {
                     buyOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                // Maker: Tahtadaki satıcı (bestSellOrder), Taker: Gelen alıcı (buyOrder)
-                saveTradeAndUpdateOrders(bestSellOrder, buyOrder, tradeQuantity, bestSellOrder.getPrice());
-                
             } else {
-                // Alıcının parası artık sıradaki en ucuz satıcıya bile yetmiyorsa döngüyü kırıp çıkıyoruz
                 break;
             }
         }
     }
-    private void matchSellOrder(Order sellOrder) {
+
+    private void matchSellOrder(Order sellOrder, OrderBook ob) {
+        // Emrin piyasa emri olup olmadığını kontrol et
+        boolean isMarket = sellOrder.getType() == OrderType.MARKET;
         
-        // Satıcının satmak istediği miktar sıfırdan büyük olduğu sürece VE alıcı tahtası boş olmadığı sürece dön
-        while (sellOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !buyOrders.isEmpty()) {
+        while (sellOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !ob.getBuyOrders().isEmpty()) {
+            Order bestBuyOrder = ob.getBuyOrders().peek();
             
-            // Alıcı tahtasındaki EN PAHALI teklife bak (peek)
-            Order bestBuyOrder = buyOrders.peek();
-            
-            // Satıcının istediği fiyat, alıcının teklif ettiği fiyata eşit veya ondan küçük mü? (Yani alıcı satıcının istediği parayı veriyor mu?)
-            if (sellOrder.getPrice().compareTo(bestBuyOrder.getPrice()) <= 0) {
-                
-                // EŞLEŞME YAKALANDI! 🚀
+            // PİYASA emriyse fiyata bakmadan eşleşir, LİMİT emriyse fiyatın uygun olması gerekir
+            if (isMarket || sellOrder.getPrice().compareTo(bestBuyOrder.getPrice()) <= 0) {
                 BigDecimal tradeQuantity = sellOrder.getQuantity().min(bestBuyOrder.getQuantity());
-                
-                log.info("💥 EŞLEŞME YAKALANDI! Satıcı ID: {}, Alıcı ID: {}, Fiyat: {}, Miktar: {}", 
-                        sellOrder.getUserId(), bestBuyOrder.getUserId(), bestBuyOrder.getPrice(), tradeQuantity);
-                
-                // 1. Miktarları düşüyoruz
+
+                // İşlem fiyatı her zaman tahtada bekleyen (maker) emrin fiyatı olur
+                executeTrade(bestBuyOrder, sellOrder, tradeQuantity, bestBuyOrder.getPrice());
+
                 sellOrder.setQuantity(sellOrder.getQuantity().subtract(tradeQuantity));
                 bestBuyOrder.setQuantity(bestBuyOrder.getQuantity().subtract(tradeQuantity));
-                
-                // 2. Alıcının elindeki miktar tamamen bittiyse onu tahtadan (kuyruktan) atıyoruz
+
                 if (bestBuyOrder.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
                     bestBuyOrder.setStatus(OrderStatus.FILLED);
-                    buyOrders.poll(); 
+                    ob.getBuyOrders().poll();
                 } else {
                     bestBuyOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                
-                // 3. Satıcının durumu güncelleniyor
+
                 if (sellOrder.getQuantity().compareTo(BigDecimal.ZERO) == 0) {
                     sellOrder.setStatus(OrderStatus.FILLED);
                 } else {
                     sellOrder.setStatus(OrderStatus.PARTIALLY_FILLED);
                 }
-                // Maker: Tahtadaki alıcı (bestBuyOrder), Taker: Gelen satıcı (sellOrder)
-                saveTradeAndUpdateOrders(bestBuyOrder, sellOrder, tradeQuantity, bestBuyOrder.getPrice());
-                
             } else {
-                // Tahtadaki en yüksek teklif bile satıcının istediği fiyata ulaşmıyorsa döngüyü kır
                 break;
             }
         }
     }
-    
-    private void saveTradeAndUpdateOrders(Order makerOrder, Order takerOrder, BigDecimal tradeQuantity, BigDecimal tradePrice) {
-        
-        // 1. Dekontu (Trade) Oluştur ve Kaydet
+
+    private void executeTrade(Order makerOrder, Order takerOrder, BigDecimal tradeQuantity, BigDecimal tradePrice) {
         Trade trade = Trade.builder()
                 .symbol(makerOrder.getSymbol())
-                .makerOrderId(makerOrder.getId()) // Tahtada bekleyen
-                .takerOrderId(takerOrder.getId()) // Gelen
-                .price(tradePrice) // İşlem fiyatı her zaman Maker'ın (tahtada bekleyenin) fiyatından gerçekleşir
+                .makerOrderId(makerOrder.getId())
+                .takerOrderId(takerOrder.getId())
+                .price(tradePrice)
                 .quantity(tradeQuantity)
                 .executedAt(Instant.now())
                 .build();
-                
-        tradeRepository.save(trade);
-        log.info("💾 İşlem (Trade) başarıyla DB'ye kaydedildi! Dekont ID: {}", trade.getId());
 
-        // 2. Emirlerin yeni miktarlarını ve durumlarını (PARTIALLY_FILLED veya FILLED) DB'de güncelle
+        tradeRepository.save(trade);
         orderRepository.save(makerOrder);
         orderRepository.save(takerOrder);
-        // Trade objesini /topic/trades kanalına fırlat!
-        messagingTemplate.convertAndSend("/topic/trades", trade);
+
+        // Anonsu yaparken sembolü de kanala ekliyoruz ki frontend doğru kanalı dinlesin
+        messagingTemplate.convertAndSend("/topic/trades/" + makerOrder.getSymbol(), trade);
     }
-    
-    // Arayüzün tahtayı görebilmesi için anlık durum raporu (Snapshot)
-    public java.util.Map<String, Object> getOrderBookSnapshot() {
-        java.util.Map<String, Object> snapshot = new java.util.HashMap<>();
+
+    // Arayüz için spesifik bir sembolün tahta fotoğrafını çeken metot
+    public Map<String, Object> getOrderBookSnapshot(String symbol) {
+        OrderBook ob = orderBooks.get(symbol);
+        if (ob == null) return Map.of("bids", List.of(), "asks", List.of());
+
+        Map<String, Object> snapshot = new java.util.HashMap<>();
         
-        // Alıcıları (Bids) en yüksek fiyattan en düşüğe sırala
-        snapshot.put("bids", buyOrders.stream()
-                .sorted(java.util.Comparator.comparing(Order::getPrice).reversed())
-                .toList());
-                
-        // Satıcıları (Asks) en düşük fiyattan en yükseğe sırala
-        snapshot.put("asks", sellOrders.stream()
-                .sorted(java.util.Comparator.comparing(Order::getPrice))
-                .toList());
-                
+        // Okuma yaparken anlık kilit almak verinin tutarlılığını garanti eder
+        ob.getLock().lock();
+        try {
+            snapshot.put("bids", ob.getBuyOrders().stream()
+                    .sorted(Comparator.comparing(Order::getPrice).reversed())
+                    .toList());
+            snapshot.put("asks", ob.getSellOrders().stream()
+                    .sorted(Comparator.comparing(Order::getPrice))
+                    .toList());
+        } finally {
+            ob.getLock().unlock();
+        }
         return snapshot;
     }
 }
