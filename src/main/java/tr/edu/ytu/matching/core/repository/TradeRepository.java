@@ -11,5 +11,5 @@ public interface TradeRepository extends JpaRepository<Trade, Long> {
     
     // Spring Data JPA bu isimlendirmeyi okuyup SQL sorgusunu otomatik yazar:
     // SELECT * FROM trades ORDER BY executed_at DESC LIMIT 50;
-    List<Trade> findTop50ByOrderByExecutedAtDesc();
+    List<Trade> findTop50BySymbolOrderByExecutedAtDesc(String symbol);
 }
