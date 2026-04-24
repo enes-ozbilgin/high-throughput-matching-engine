@@ -21,9 +21,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        // Dış dünyanın (Örn: React/Vue uygulamasının) bizim motora bağlanmak için gireceği ana kapı (Handshake adresi)
+        // SockJS yedeğini kaldırdık, saf ve ışık hızında WebSocket bağlantısı:
         registry.addEndpoint("/ws-engine")
-                .setAllowedOriginPatterns("*") // Geliştirme aşamasında her yerden bağlantıya izin ver
-                .withSockJS(); // Bağlantı koparsa veya tarayıcı desteklemezse otomatik yedekleme sağlar
+                .setAllowedOriginPatterns("*"); 
     }
 }
