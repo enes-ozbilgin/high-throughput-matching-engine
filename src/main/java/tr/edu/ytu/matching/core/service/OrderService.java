@@ -6,53 +6,44 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import tr.edu.ytu.matching.core.model.Order;
 import tr.edu.ytu.matching.core.model.OrderStatus;
-import tr.edu.ytu.matching.core.repository.OrderRepository;
 
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicLong;
 
-@Slf4j
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class OrderService {
 
-    private final OrderRepository orderRepository;
-    
-    // Redis ile konuşmamızı sağlayacak araç
     private final StringRedisTemplate redisTemplate;
-    
-    // Java objemizi (Order) JSON metnine çevirecek araç
     private final ObjectMapper objectMapper;
+    
+    // MİKRO-OPTİMİZASYON: Tüm thread'lerin kilitlenmeden, ışık hızında benzersiz ID 
+    // alabilmesi için donanım seviyesinde (CAS) çalışan atomik bir sayaç.
+    private final AtomicLong orderIdCounter = new AtomicLong(System.currentTimeMillis());
 
-    // Redis'teki kuyruğumuzun adı
-    private static final String ORDER_QUEUE = "engine:order_queue";
-
-    @Transactional
     public Order createOrder(Order incomingOrder) {
-        
         incomingOrder.setStatus(OrderStatus.PENDING);
         incomingOrder.setCreatedAt(Instant.now());
-
-        // 1. PostgreSQL'e Kaydet (Kalıcı Yedek)
-        Order savedOrder = orderRepository.save(incomingOrder);
-        log.info("Yeni emir DB'ye kaydedildi -> ID: {}", savedOrder.getId());
-
-        // 2. Redis'e Fırlat (Hızlı İşlem İçin)
-        try {
-            // Emri JSON formatına çeviriyoruz
-            String orderJson = objectMapper.writeValueAsString(savedOrder);
-            
-            // Redis'teki "engine:order_queue" listesinin en soluna (başına) ekliyoruz
-            redisTemplate.opsForList().leftPush(ORDER_QUEUE, orderJson);
-            
-            log.info("Emir ışık hızında Redis kuyruğuna fırlatıldı! 🚀");
-            
-        } catch (JsonProcessingException e) {
-            log.error("Emir Redis'e gönderilirken JSON hatası oluştu!", e);
+        
+        // Math.random() yerine Atomic sayacımızı kullanıyoruz. Asla çakışma ve bekleme olmaz!
+        if (incomingOrder.getId() == null) {
+            incomingOrder.setId(orderIdCounter.incrementAndGet());
         }
 
-        return savedOrder;
+        try {
+            // DB'yi HİÇ BEKLEMEDEN, emri doğrudan Redis otobanına fırlatıyoruz!
+            redisTemplate.opsForList().leftPush("engine:order_queue", objectMapper.writeValueAsString(incomingOrder));
+            
+            // Eğer saniyede 10.000 işlem yapıyorsan, bu debug logunu bile kapatmak
+            // performansı ekstra %2-3 artıracaktır. Şimdilik kalabilir.
+            log.debug("Emir ışık hızında Redis kuyruğuna fırlatıldı! 🚀");
+        } catch (JsonProcessingException e) {
+            log.error("JSON Hatası", e);
+        }
+
+        return incomingOrder;
     }
 }

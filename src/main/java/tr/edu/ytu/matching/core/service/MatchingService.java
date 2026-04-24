@@ -16,6 +16,7 @@ import tr.edu.ytu.matching.core.repository.TradeRepository;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -28,26 +29,20 @@ import java.util.concurrent.locks.ReentrantLock;
 @Slf4j
 public class MatchingService {
 
-	// Redis'ten veri okumak için
     private final org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
-    
-    // Virtual Thread veya Classic Thread kullanacak olan havuzumuz!
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final java.util.concurrent.ExecutorService executorService;
-    
     private final OrderRepository orderRepository;
     private final TradeRepository tradeRepository;
     private final SimpMessagingTemplate messagingTemplate;
 
-    // Sistemdeki 10 Farklı İşlem Çifti
     public static final List<String> SYMBOLS = List.of(
             "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
             "ADA_USDT", "AVAX_USDT", "DOGE_USDT", "DOT_USDT", "LINK_USDT"
     );
 
-    // Her sembolün kendi Emir Defterini ve Kilidini (Lock Striping) tutan harita
     private final Map<String, OrderBook> orderBooks = new ConcurrentHashMap<>();
 
-    // İç Sınıf: Bağımsız Emir Defteri
     @Data
     public static class OrderBook {
         private final ReentrantLock lock = new ReentrantLock();
@@ -59,44 +54,32 @@ public class MatchingService {
         );
     }
 
+    // YENİ: Eşleşen işlemleri kilit dışına taşımak için veri tutucu (Record)
+    private record TradeResult(Trade trade, Order maker, Order taker) {}
+
     @PostConstruct
     public void init() {
-        // 1. Sistem kalkarken 10 pazarın tahtasını ve kilitlerini hazırla
         for (String symbol : SYMBOLS) {
             orderBooks.put(symbol, new OrderBook());
         }
-        log.info("🚀 10 Farklı pazar için Lock Striping altyapısı başarıyla kuruldu!");
-
-        // 2. Redis'i dinleyen ve Virtual Thread kullanan işçi (Consumer)
-        executorService.submit(() -> {
-            log.info("🎧 Redis Emir Dinleyicisi (Consumer) başlatıldı! Kuyruk dinleniyor...");
-            
-            // JSON metnini Order objesine çevirecek araç (Tarih formatları için modül ekliyoruz)
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-
-            while (true) {
-                try {
-                    // DÜZELTME 1: Kuyruk adını tam olarak OrderService'teki gibi yazdık.
-                    // DÜZELTME 2: Gelen veriyi bir JSON metni (String) olarak karşıladık.
-                	String orderJson = redisTemplate.opsForList().rightPop("engine:order_queue", java.time.Duration.ofSeconds(1));
-                    
-                    if (orderJson != null) {
-                        // DÜZELTME 3: Gelen JSON metnini tekrar Order objesine dönüştürüyoruz
-                        Order newOrder = mapper.readValue(orderJson, Order.class);
-
-                        log.info("🔥 Kuyruktan yeni emir kapıldı! İşleniyor -> ID: {}, {} {} {}", 
-                                newOrder.getId(), newOrder.getSide(), newOrder.getQuantity(), newOrder.getSymbol());
-                        
-                        // Emri alıp Lock Striping'li eşleştirme metoduna gönderiyoruz
-                        processOrder(newOrder);
+        log.debug("🚀 10 Farklı pazar için Lock Striping altyapısı başarıyla kuruldu!");
+        log.debug("🎧 Redis Emir Dinleyicileri (20 Virtual Thread) başlatılıyor...");
+        
+        for (int i = 0; i < 20; i++) {
+            executorService.submit(() -> {
+                while (true) {
+                    try {
+                        String orderJson = redisTemplate.opsForList().rightPop("engine:order_queue", java.time.Duration.ofSeconds(1));
+                        if (orderJson != null) {
+                            Order newOrder = objectMapper.readValue(orderJson, Order.class);
+                            processOrder(newOrder);
+                        }
+                    } catch (Exception e) {
+                        // Zaman aşımı sessiz geçiş
                     }
-                } catch (Exception e) {
-                    // Zaman aşımı durumunda (1 saniyede bir) buraya düşer, döngü devam eder.
-                    // log.error("Kuyruk okuma hatası: {}", e.getMessage()); 
                 }
-            }
-        });
+            });
+        }
     }
 
     public void processOrder(Order order) {
@@ -106,44 +89,48 @@ public class MatchingService {
             return;
         }
 
-        // 🔒 LOCK STRIPING: Sadece bu sembolün kilidini al! 
-        // BTC eşleşirken ETH tahtası hiçbir engelleme olmadan çalışmaya devam eder.
+        // OPTİMİZASYON 1: İşlemleri kilit içindeyken yayınlamak yerine bu listede biriktiriyoruz
+        List<TradeResult> pendingTrades = new ArrayList<>();
+
         ob.getLock().lock();
         try {
             if (order.getSide() == OrderSide.BUY) {
-                matchBuyOrder(order, ob);
+                matchBuyOrder(order, ob, pendingTrades);
                 
-                // SADECE LİMİT EMİRLERİ TAHTAYA YAZILABİLİR
                 if (order.getType() == OrderType.LIMIT && order.getQuantity().compareTo(BigDecimal.ZERO) > 0) {
                     ob.getBuyOrders().add(order);
                 }
             } else if (order.getSide() == OrderSide.SELL) {
-                matchSellOrder(order, ob);
+                matchSellOrder(order, ob, pendingTrades);
                 
-                // SADECE LİMİT EMİRLERİ TAHTAYA YAZILABİLİR
                 if (order.getType() == OrderType.LIMIT && order.getQuantity().compareTo(BigDecimal.ZERO) > 0) {
                     ob.getSellOrders().add(order);
                 }
             }
         } finally {
-            // Kilidi ne olursa olsun serbest bırak
+            // Kilidi MÜMKÜN OLAN EN KISA SÜREDE aç! Ağ işlemlerini bekleme.
             ob.getLock().unlock();
+        }
+
+        // OPTİMİZASYON 2: Ağ (WebSocket) ve Veritabanı işlemleri kilit AÇILDIKTAN SONRA yapılır.
+        // Artık bu işlemler diğer thread'lerin BTC pazarında işlem yapmasını engellemiyor!
+        for (TradeResult result : pendingTrades) {
+            processExecutedTrade(result);
         }
     }
 
-    private void matchBuyOrder(Order buyOrder, OrderBook ob) {
-        // Emrin piyasa emri olup olmadığını kontrol et
+    private void matchBuyOrder(Order buyOrder, OrderBook ob, List<TradeResult> pendingTrades) {
         boolean isMarket = buyOrder.getType() == OrderType.MARKET;
         
         while (buyOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !ob.getSellOrders().isEmpty()) {
             Order bestSellOrder = ob.getSellOrders().peek();
             
-            // PİYASA emriyse fiyata bakmadan eşleşir, LİMİT emriyse fiyatın uygun olması gerekir
             if (isMarket || buyOrder.getPrice().compareTo(bestSellOrder.getPrice()) >= 0) {
                 BigDecimal tradeQuantity = buyOrder.getQuantity().min(bestSellOrder.getQuantity());
                 
-                // İşlem fiyatı her zaman tahtada bekleyen (maker) emrin fiyatı olur
-                executeTrade(bestSellOrder, buyOrder, tradeQuantity, bestSellOrder.getPrice());
+                // İşlemi hemen fırlatmak yerine listeye ekliyoruz
+                Trade trade = buildTradeObj(bestSellOrder, buyOrder, tradeQuantity, bestSellOrder.getPrice());
+                pendingTrades.add(new TradeResult(trade, bestSellOrder, buyOrder));
 
                 buyOrder.setQuantity(buyOrder.getQuantity().subtract(tradeQuantity));
                 bestSellOrder.setQuantity(bestSellOrder.getQuantity().subtract(tradeQuantity));
@@ -166,19 +153,17 @@ public class MatchingService {
         }
     }
 
-    private void matchSellOrder(Order sellOrder, OrderBook ob) {
-        // Emrin piyasa emri olup olmadığını kontrol et
+    private void matchSellOrder(Order sellOrder, OrderBook ob, List<TradeResult> pendingTrades) {
         boolean isMarket = sellOrder.getType() == OrderType.MARKET;
         
         while (sellOrder.getQuantity().compareTo(BigDecimal.ZERO) > 0 && !ob.getBuyOrders().isEmpty()) {
             Order bestBuyOrder = ob.getBuyOrders().peek();
             
-            // PİYASA emriyse fiyata bakmadan eşleşir, LİMİT emriyse fiyatın uygun olması gerekir
             if (isMarket || sellOrder.getPrice().compareTo(bestBuyOrder.getPrice()) <= 0) {
                 BigDecimal tradeQuantity = sellOrder.getQuantity().min(bestBuyOrder.getQuantity());
 
-                // İşlem fiyatı her zaman tahtada bekleyen (maker) emrin fiyatı olur
-                executeTrade(bestBuyOrder, sellOrder, tradeQuantity, bestBuyOrder.getPrice());
+                Trade trade = buildTradeObj(bestBuyOrder, sellOrder, tradeQuantity, bestBuyOrder.getPrice());
+                pendingTrades.add(new TradeResult(trade, bestBuyOrder, sellOrder));
 
                 sellOrder.setQuantity(sellOrder.getQuantity().subtract(tradeQuantity));
                 bestBuyOrder.setQuantity(bestBuyOrder.getQuantity().subtract(tradeQuantity));
@@ -201,8 +186,8 @@ public class MatchingService {
         }
     }
 
-    private void executeTrade(Order makerOrder, Order takerOrder, BigDecimal tradeQuantity, BigDecimal tradePrice) {
-        Trade trade = Trade.builder()
+    private Trade buildTradeObj(Order makerOrder, Order takerOrder, BigDecimal tradeQuantity, BigDecimal tradePrice) {
+        return Trade.builder()
                 .symbol(makerOrder.getSymbol())
                 .makerOrderId(makerOrder.getId())
                 .takerOrderId(takerOrder.getId())
@@ -210,23 +195,43 @@ public class MatchingService {
                 .quantity(tradeQuantity)
                 .executedAt(Instant.now())
                 .build();
-
-        tradeRepository.save(trade);
-        orderRepository.save(makerOrder);
-        orderRepository.save(takerOrder);
-
-        // Anonsu yaparken sembolü de kanala ekliyoruz ki frontend doğru kanalı dinlesin
-        messagingTemplate.convertAndSend("/topic/trades/" + makerOrder.getSymbol(), trade);
     }
 
-    // Arayüz için spesifik bir sembolün tahta fotoğrafını çeken metot
+    private void processExecutedTrade(TradeResult result) {
+        // Bu metot artık KİLİT DIŞINDA çalıştığı için istediği kadar yavaş olabilir.
+        messagingTemplate.convertAndSend("/topic/trades/" + result.trade().getSymbol(), result.trade());
+
+        executorService.submit(() -> {
+            try {
+                // Eşleşme (Trade) işlemi benzersiz olduğu için klasik save ile kaydedilebilir
+                tradeRepository.save(result.trade());
+
+                // 🚀 Order'lar için RACE-CONDITION önleyici UPSERT kullanıyoruz:
+                Order maker = result.maker();
+                orderRepository.upsertOrder(
+                        maker.getId(), maker.getUserId(), maker.getSymbol(), 
+                        maker.getSide().name(), maker.getType().name(), maker.getPrice(), 
+                        maker.getQuantity(), maker.getStatus().name(), maker.getCreatedAt()
+                );
+
+                Order taker = result.taker();
+                orderRepository.upsertOrder(
+                        taker.getId(), taker.getUserId(), taker.getSymbol(), 
+                        taker.getSide().name(), taker.getType().name(), taker.getPrice(), 
+                        taker.getQuantity(), taker.getStatus().name(), taker.getCreatedAt()
+                );
+            } catch (Exception e) {
+                // Upsert sayesinde artık buraya hata düşmeyecek, ama yine de sigorta olarak kalsın.
+                log.warn("Beklenmeyen DB Kayıt Hatası: {}", e.getMessage());
+            }
+        });
+    }
+
     public Map<String, Object> getOrderBookSnapshot(String symbol) {
         OrderBook ob = orderBooks.get(symbol);
         if (ob == null) return Map.of("bids", List.of(), "asks", List.of());
 
         Map<String, Object> snapshot = new java.util.HashMap<>();
-        
-        // Okuma yaparken anlık kilit almak verinin tutarlılığını garanti eder
         ob.getLock().lock();
         try {
             snapshot.put("bids", ob.getBuyOrders().stream()
@@ -239,5 +244,15 @@ public class MatchingService {
             ob.getLock().unlock();
         }
         return snapshot;
+    }
+    
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 500)
+    public void broadcastQueueDepth() {
+        try {
+            Long queueSize = redisTemplate.opsForList().size("engine:order_queue");
+            if (queueSize == null) queueSize = 0L;
+            messagingTemplate.convertAndSend("/topic/metrics/queue", queueSize);
+        } catch (Exception e) {
+        }
     }
 }

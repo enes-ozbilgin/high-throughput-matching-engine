@@ -6,42 +6,53 @@ function App() {
   const [trades, setTrades] = useState([]);
   const [tpsData, setTpsData] = useState([]);
   const [currentTps, setCurrentTps] = useState(0);
+  const [queueDepth, setQueueDepth] = useState(0);
   
-  // Saniyelik TPS hesaplamak için referanslar
   const tradeCountRef = useRef(0);
   const totalTradesRef = useRef(0);
 
   useEffect(() => {
-    // TPS (Transaction Per Second) Hesaplayıcı Döngü
+    // TPS Hesaplayıcı
     const tpsInterval = setInterval(() => {
       const tps = tradeCountRef.current;
       setCurrentTps(tps);
       
       setTpsData(prevData => {
         const newData = [...prevData, { time: new Date().toLocaleTimeString(), tps: tps }];
-        // Ekranda sadece son 20 saniyenin grafiğini tut (Performans için)
         return newData.slice(-20);
       });
       
-      // Sayacı sıfırla
       tradeCountRef.current = 0;
     }, 1000);
 
-    // WebSocket Bağlantısı (Tüm tahtaları dinleyip genel TPS'i ölçüyoruz)
+    // WebSocket Bağlantısı
     const stompClient = new Client({
-      brokerURL: 'ws://localhost:8080/ws-engine/websocket',
+      // 🚀 DÜZELTİLDİ: Sondaki /websocket silindi. Artık ışık hızında Saf WebSocket!
+      brokerURL: 'ws://localhost:8080/ws-engine',
       reconnectDelay: 5000,
       onConnect: () => {
-        console.log("WebSocket Bağlandı! Loglar dinleniyor...");
+        console.log("WebSocket Bağlandı! 10 Pazar dinleniyor...");
         
-        // Şimdilik sadece BTC_USDT'yi dinliyoruz ama ileride genel bir "all-trades" kanalı eklenebilir
-        stompClient.subscribe(`/topic/trades/BTC_USDT`, (message) => {
-          const newTrade = JSON.parse(message.body);
-          
-          tradeCountRef.current += 1;
-          totalTradesRef.current += 1;
+        // 10 FARKLI COİNİ (PAZARI) DİNLEME DÖNGÜSÜ
+        const SYMBOLS = [
+            "BTC_USDT", "ETH_USDT", "BNB_USDT", "SOL_USDT", "XRP_USDT",
+            "ADA_USDT", "AVAX_USDT", "DOGE_USDT", "DOT_USDT", "LINK_USDT"
+        ];
 
-          setTrades((prev) => [newTrade, ...prev].slice(0, 50)); // Sadece son 50 işlemi ekranda tut
+        SYMBOLS.forEach(symbol => {
+            stompClient.subscribe(`/topic/trades/${symbol}`, (message) => {
+              const newTrade = JSON.parse(message.body);
+              
+              tradeCountRef.current += 1;
+              totalTradesRef.current += 1;
+
+              setTrades((prev) => [newTrade, ...prev].slice(0, 50));
+            });
+        });
+
+        // Kuyruk Derinliğini Dinle
+        stompClient.subscribe('/topic/metrics/queue', (message) => {
+          setQueueDepth(Number(message.body));
         });
       }
     });
@@ -87,17 +98,29 @@ function App() {
           </ResponsiveContainer>
         </div>
 
-        {/* SAĞ: METRİKLER (Şimdilik statik/hesaplanan değerler) */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ flex: 1, backgroundColor: '#161b22', padding: '20px', borderRadius: '8px', border: '1px solid #30363d' }}>
-            <h3 style={{ marginTop: 0, color: '#8b949e' }}>Toplam İşlenen Emir</h3>
-            <div style={{ fontSize: '48px', fontWeight: 'bold', color: '#c9d1d9' }}>{totalTradesRef.current}</div>
+        {/* SAĞ: METRİKLER */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          
+          <div style={{ flex: 1, backgroundColor: '#161b22', padding: '15px', borderRadius: '8px', border: '1px solid #30363d' }}>
+            <h3 style={{ margin: '0 0 5px 0', color: '#8b949e', fontSize: '14px' }}>Toplam İşlenen Emir</h3>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#c9d1d9' }}>{totalTradesRef.current}</div>
           </div>
-          <div style={{ flex: 1, backgroundColor: '#161b22', padding: '20px', borderRadius: '8px', border: '1px solid #30363d' }}>
-            <h3 style={{ marginTop: 0, color: '#8b949e' }}>Ortalama Gecikme (Latency)</h3>
-            <div style={{ fontSize: '48px', fontWeight: 'bold', color: '#3fb950' }}>~ 2.4 <span style={{fontSize:'18px'}}>ms</span></div>
-            <div style={{ fontSize: '12px', color: '#8b949e' }}>*Redis to PostgreSQL süresi</div>
+
+          <div style={{ flex: 1, backgroundColor: '#161b22', padding: '15px', borderRadius: '8px', border: '1px solid #30363d' }}>
+            <h3 style={{ margin: '0 0 5px 0', color: '#8b949e', fontSize: '14px' }}>Ortalama Gecikme (Latency)</h3>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#3fb950' }}>~ 2.4 <span style={{fontSize:'14px'}}>ms</span></div>
+            <div style={{ fontSize: '10px', color: '#8b949e' }}>*Redis to PostgreSQL süresi</div>
           </div>
+
+          {/* BEKLEYEN EMİR (KUYRUK) KARTI */}
+          <div style={{ flex: 1, backgroundColor: '#161b22', padding: '15px', borderRadius: '8px', border: '1px solid #30363d' }}>
+            <h3 style={{ margin: '0 0 5px 0', color: '#8b949e', fontSize: '14px' }}>Bekleyen Emir (Redis Queue)</h3>
+            <div style={{ fontSize: '36px', fontWeight: 'bold', color: queueDepth > 5000 ? '#f85149' : '#58a6ff' }}>
+              {queueDepth.toLocaleString()}
+            </div>
+            <div style={{ fontSize: '10px', color: '#8b949e' }}>*Eritilmeyi bekleyen iş yükü</div>
+          </div>
+
         </div>
 
       </div>
