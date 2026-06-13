@@ -20,7 +20,8 @@ public class MatchingEngineSimulation extends Simulation {
     HttpProtocolBuilder httpProtocol = http
         .baseUrl("http://localhost:8080")
         .acceptHeader("application/json")
-        .contentTypeHeader("application/json");
+        .contentTypeHeader("application/json")
+        .shareConnections();
 
     // Sistemdeki 10 Pazar (Lock Striping'i test etmek için yükü dağıtıyoruz)
     List<String> symbols = Arrays.asList(

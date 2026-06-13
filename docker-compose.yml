@@ -29,6 +29,26 @@ services:
     volumes:
       - matching-redisdata:/data
 
+  # ===============================
+  # 3. JAVA EŞLEŞTİRME MOTORU
+  # ===============================
+  java-engine:
+    build: .
+    container_name: matching-java-engine
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      # Spring Boot'u Profil Seçimi
+      - SPRING_PROFILES_ACTIVE=classic
+      
+      # application.properties içindeki localhost ayarlarını eziyoruz
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://matching-postgres:5437/matching_db
+      - SPRING_DATA_REDIS_HOST=matching-redis
+
 # Verilerin WalkTogether ile karışmaması için Volume isimleri özelleştirildi
 volumes:
   matching-pgdata:
