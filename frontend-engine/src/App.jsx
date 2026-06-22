@@ -72,7 +72,7 @@ function App() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #30363d', paddingBottom: '10px' }}>
         <div>
           <h1 style={{ margin: 0, color: '#58a6ff' }}>YTU Ar-Ge Motor Gözlem Paneli</h1>
-          <span style={{ fontSize: '14px', color: '#8b949e' }}>Mimari: Java 21 Virtual Threads + Lock Striping</span>
+          <span style={{ fontSize: '14px', color: '#8b949e' }}>Yüksek Hacimli Emir Eşleştirme Motoru Performans Analizi</span>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: '12px', color: '#8b949e' }}>Anlık Throughput (TPS)</div>
@@ -107,9 +107,9 @@ function App() {
           </div>
 
           <div style={{ flex: 1, backgroundColor: '#161b22', padding: '15px', borderRadius: '8px', border: '1px solid #30363d' }}>
-            <h3 style={{ margin: '0 0 5px 0', color: '#8b949e', fontSize: '14px' }}>Ortalama Gecikme (Latency)</h3>
+            <h3 style={{ margin: '0 0 5px 0', color: '#8b949e', fontSize: '14px' }}>Hedeflenen Gecikme (SLA)</h3>
             <div style={{ fontSize: '36px', fontWeight: 'bold', color: '#3fb950' }}>~ 2.4 <span style={{fontSize:'14px'}}>ms</span></div>
-            <div style={{ fontSize: '10px', color: '#8b949e' }}>*Redis to PostgreSQL süresi</div>
+            <div style={{ fontSize: '10px', color: '#8b949e' }}>*Redis to PostgreSQL maksimum hedef süresi</div>
           </div>
 
           {/* BEKLEYEN EMİR (KUYRUK) KARTI */}
