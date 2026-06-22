@@ -22,7 +22,7 @@ public class MatchingEngineSimulation extends Simulation {
         .baseUrl("http://localhost:8080")
         .acceptHeader("application/json")
         .contentTypeHeader("application/json")
-        .shareConnections(); // Bağlantı havuzunu optimize eder
+        .shareConnections();
 
     // Sistemdeki 10 Pazar
     List<String> symbols = Arrays.asList(
