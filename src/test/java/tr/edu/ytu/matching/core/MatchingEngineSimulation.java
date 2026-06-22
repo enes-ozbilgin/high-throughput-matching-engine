@@ -63,13 +63,12 @@ public class MatchingEngineSimulation extends Simulation {
             .check(status().is(200)) // Başarılı (200 OK) döndüğünü doğrula
         );
 
-    // 4. Testin Yükleme Profili (Saniyede kaç emir?)
+    // 4. Testin Yükleme Profili (Rapora Tam Uyumlu Acımasız Test)
     {
         setUp(
             scn.injectOpen(
-                // Isınma turu: 10 saniye boyunca yükü yavaş yavaş saniyede 10.000 kullanıcıya çıkar
-                rampUsersPerSec(10).to(10000).during(Duration.ofSeconds(10)),
-                // Zirve noktası: Tam 30 saniye boyunca saniyede 10.000 emir fırlatmaya devam et!
+                // Isınma turu tamamen kaldırıldı!
+                // Test başladığı saniye motora anında tam kapasiteyle (10.000 emir/sn) vuruyoruz.
                 constantUsersPerSec(10000).during(Duration.ofSeconds(30))
             )
         ).protocols(httpProtocol);

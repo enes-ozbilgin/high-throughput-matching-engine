@@ -35,10 +35,10 @@ public class Order {
     @Builder.Default
     private OrderType type = OrderType.LIMIT;
 
-    @Column(precision = 19, scale = 4)
+    @Column(columnDefinition = "DOUBLE PRECISION")
     private BigDecimal price; 
 
-    @Column(precision = 19, scale = 4)
+    @Column(columnDefinition = "DOUBLE PRECISION")
     private BigDecimal quantity; 
 
     @Enumerated(EnumType.STRING)

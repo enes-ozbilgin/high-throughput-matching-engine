@@ -27,10 +27,10 @@ public class Trade {
     private Long makerOrderId;
     private Long takerOrderId;
 
-    @Column(precision = 19, scale = 4)
+    @Column(columnDefinition = "DOUBLE PRECISION")
     private BigDecimal price;
 
-    @Column(precision = 19, scale = 4)
+    @Column(columnDefinition = "DOUBLE PRECISION")
     private BigDecimal quantity;
 
     private Instant executedAt;
