@@ -67,7 +67,7 @@ public class MatchingEngineSimulation extends Simulation {
     {
         setUp(
             scn.injectOpen(
-                // Isınma turu tamamen kaldırıldı!
+            	rampUsersPerSec(1000).to(10000).during(Duration.ofSeconds(10)),
                 // Test başladığı saniye motora anında tam kapasiteyle (10.000 emir/sn) vuruyoruz.
                 constantUsersPerSec(10000).during(Duration.ofSeconds(30))
             )
